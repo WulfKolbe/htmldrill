@@ -36,6 +36,12 @@ def resolve_local_id(local_id: str, work: Optional[str] = None) -> str:
     root = work_root(work)
     if (root / f"{local_id}.htmldrill.json").exists():
         return local_id
+    # A URL or an absolute path is NOT a bare id token — it yields a non-relative
+    # glob pattern that Path.glob rejects (and a '/'-bearing pattern would never
+    # match a flat work dir anyway). Treat those as "no prefix match" and return
+    # them unchanged; callers map them through local_id_for separately.
+    if "/" in local_id or "\\" in local_id or "://" in local_id:
+        return local_id
     matches = sorted(root.glob(f"{local_id}*.htmldrill.json"))
     if len(matches) == 1:
         return matches[0].name[: -len(".htmldrill.json")]

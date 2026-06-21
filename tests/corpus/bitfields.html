@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ADS-B Decoder - Browser</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    
+    .header {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    
+    h1 {
+      color: #333;
+      margin-bottom: 10px;
+    }
+    
+    .subtitle {
+      color: #666;
+      font-size: 14px;
+    }
+    
+    .input-section {
+      background: white;
+      padding: 25px;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    
+    .input-group {
+      margin-bottom: 15px;
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+      color: #333;
+    }
+    
+    input[type="text"], textarea {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      transition: border-color 0.3s;
+    }
+    
+    input[type="text"]:focus, textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+    }
+    
+    button {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+    }
+    
+    button:active {
+      transform: translateY(0);
+    }
+    
+    .results {
+      background: white;
+      padding: 25px;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+    }
+    
+    .message-card {
+      background: #f8f9fa;
+      border-left: 4px solid #667eea;
+      padding: 20px;
+      margin-bottom: 15px;
+      border-radius: 8px;
+    }
+    
+    .message-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    
+    .icao {
+      font-family: 'Courier New', monospace;
+      background: #667eea;
+      color: white;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-weight: 600;
+    }
+    
+    .type-badge {
+      background: #764ba2;
+      color: white;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+    }
+    
+    .info-item {
+      background: white;
+      padding: 12px;
+      border-radius: 6px;
+    }
+    
+    .info-label {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 4px;
+    }
+    
+    .info-value {
+      font-size: 18px;
+      font-weight: 600;
+      color: #333;
+    }
+    
+    .callsign {
+      font-family: 'Courier New', monospace;
+      font-size: 24px;
+      color: #667eea;
+    }
+    
+    .raw-data {
+      margin-top: 15px;
+      padding: 12px;
+      background: #2d3748;
+      color: #a0aec0;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      overflow-x: auto;
+    }
+    
+    .examples {
+      margin-top: 15px;
+    }
+    
+    .example-btn {
+      background: #f0f4f8;
+      color: #667eea;
+      border: 2px solid #667eea;
+      padding: 8px 16px;
+      margin-right: 10px;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+    
+    .example-btn:hover {
+      background: #667eea;
+      color: white;
+    }
+    
+    .error {
+      background: #fee;
+      border-left-color: #f44;
+      color: #c33;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>✈️ ADS-B Message Decoder</h1>
+      <p class="subtitle">Decode Mode S / ADS-B aviation transponder messages in your browser</p>
+    </div>
+    
+    <div class="input-section">
+      <div class="input-group">
+        <label for="messageInput">Enter ADS-B Message (28 hex characters)</label>
+        <input type="text" id="messageInput" placeholder="8D4840D6202CC371C32CE0576098">
+      </div>
+      
+      <button onclick="decodeMessage()">🔍 Decode Message</button>
+      
+      <div class="examples">
+        <label>Examples:</label><br>
+        <button class="example-btn" onclick="loadExample('8D4840D6202CC371C32CE0576098')">Aircraft ID</button>
+        <button class="example-btn" onclick="loadExample('8D40621D58C382D690C8AC2863A7')">Position</button>
+        <button class="example-btn" onclick="loadExample('8DA05F219B06B6AF189400CBC33F')">Velocity</button>
+      </div>
+      
+      <div class="input-group" style="margin-top: 20px;">
+        <label for="bulkInput">Or paste multiple messages (one per line)</label>
+        <textarea id="bulkInput" placeholder="8D4840D6202CC371C32CE0576098
+8D40621D58C382D690C8AC2863A7
+8DA05F219B06B6AF189400CBC33F"></textarea>
+      </div>
+      
+      <button onclick="decodeBulk()">🔍 Decode All</button>
+    </div>
+    
+    <div class="results" id="results" style="display: none;">
+      <h2>Decoded Messages</h2>
+      <div id="messageList"></div>
+    </div>
+  </div>
+  
+  <script type="module">
+    // Import from your compiled TypeScript
+    // For demo, we'll inline a simplified version
+    
+    class BitDecoderFast {
+      constructor() {
+        this.buffer = new Uint8Array(0);
+        this.bitLength = 0;
+      }
+      
+      fromHex(hexString) {
+        const upper = hexString.toUpperCase();
+        const byteLength = Math.ceil(upper.length / 2);
+        this.buffer = new Uint8Array(byteLength);
+        
+        for (let i = 0; i < byteLength; i++) {
+          const idx = i * 2;
+          const byte = parseInt(upper.substring(idx, idx + 2), 16);
+          this.buffer[i] = isNaN(byte) ? 0 : byte;
+        }
+        
+        this.bitLength = byteLength * 8;
+        return this;
+      }
+      
+      getBits(offset, length) {
+        if (length === 0) return 0;
+        
+        let result = 0;
+        for (let i = 0; i < length; i++) {
+          const bitPos = offset + i;
+          const byteIdx = Math.floor(bitPos / 8);
+          const bitIdx = 7 - (bitPos % 8);
+          const bit = (this.buffer[byteIdx] >>> bitIdx) & 1;
+          result = (result * 2) + bit;
+        }
+        
+        return result;
+      }
+    }
+    
+    class ADSBDecoder {
+      constructor() {
+        this.decoder = new BitDecoderFast();
+        this.CHARSET = '#ABCDEFGHIJKLMNOPQRSTUVWXYZ##### ###############0123456789######';
+      }
+      
+      decode(hexMessage) {
+        const hex = hexMessage.toUpperCase().replace(/\s/g, '');
+        if (hex.length !== 14 && hex.length !== 28) return null;
+        
+        this.decoder.fromHex(hex);
+        const df = this.decoder.getBits(0, 5);
+        
+        const message = {
+          downlinkFormat: df,
+          raw: hex,
+          timestamp: Date.now(),
+        };
+        
+        if (df === 17 || df === 18) {
+          this.decodeExtendedSquitter(message);
+        }
+        
+        return message;
+      }
+      
+      decodeExtendedSquitter(message) {
+        message.capability = this.decoder.getBits(5, 3);
+        const icao = this.decoder.getBits(8, 24);
+        message.icao24 = icao.toString(16).toUpperCase().padStart(6, '0');
+        
+        const tc = this.decoder.getBits(32, 5);
+        message.typeCode = tc;
+        message.typeName = this.getTypeName(tc);
+        
+        if (tc >= 1 && tc <= 4) {
+          this.decodeAircraftIdentification(message);
+        } else if ((tc >= 9 && tc <= 18) || (tc >= 20 && tc <= 22)) {
+          this.decodeAirbornePosition(message);
+        } else if (tc === 19) {
+          this.decodeAirborneVelocity(message);
+        }
+      }
+      
+      decodeAircraftIdentification(message) {
+        let callsign = '';
+        for (let i = 0; i < 8; i++) {
+          const charCode = this.decoder.getBits(40 + i * 6, 6);
+          callsign += this.CHARSET[charCode];
+        }
+        message.callsign = callsign.trim();
+      }
+      
+      decodeAirbornePosition(message) {
+        const altCode = this.decoder.getBits(40, 12);
+        const qBit = (altCode >> 4) & 1;
+        
+        if (qBit) {
+          const n = ((altCode & 0xFE0) >> 1) | (altCode & 0x0F);
+          message.altitude = n * 25 - 1000;
+        }
+        
+        message.cprFormat = this.decoder.getBits(53, 1);
+        message.cprLatitude = this.decoder.getBits(54, 17);
+        message.cprLongitude = this.decoder.getBits(71, 17);
+      }
+      
+      decodeAirborneVelocity(message) {
+        const subtype = this.decoder.getBits(37, 3);
+        
+        if (subtype === 1 || subtype === 2) {
+          const ewDir = this.decoder.getBits(40, 1);
+          const ewVel = this.decoder.getBits(41, 10) - 1;
+          const nsDir = this.decoder.getBits(51, 1);
+          const nsVel = this.decoder.getBits(52, 10) - 1;
+          
+          if (ewVel >= 0 && nsVel >= 0) {
+            const vEW = ewDir ? -ewVel : ewVel;
+            const vNS = nsDir ? -nsVel : nsVel;
+            
+            message.velocity = Math.sqrt(vEW * vEW + vNS * vNS);
+            message.heading = Math.atan2(vEW, vNS) * 180 / Math.PI;
+            if (message.heading < 0) message.heading += 360;
+          }
+        }
+        
+        const vrSign = this.decoder.getBits(63, 1);
+        const vrValue = this.decoder.getBits(64, 9) - 1;
+        if (vrValue >= 0) {
+          message.verticalRate = (vrSign ? -vrValue : vrValue) * 64;
+        }
+      }
+      
+      getTypeName(tc) {
+        if (tc >= 1 && tc <= 4) return 'Aircraft Identification';
+        if (tc >= 9 && tc <= 18) return 'Airborne Position (Baro)';
+        if (tc === 19) return 'Airborne Velocity';
+        return 'Unknown/Reserved';
+      }
+    }
+    
+    // Make globally available
+    window.decoder = new ADSBDecoder();
+    
+    window.decodeMessage = function() {
+      const input = document.getElementById('messageInput').value.trim();
+      if (!input) return;
+      
+      const message = window.decoder.decode(input);
+      displayMessages([message]);
+    };
+    
+    window.decodeBulk = function() {
+      const input = document.getElementById('bulkInput').value.trim();
+      if (!input) return;
+      
+      const lines = input.split('\n').filter(l => l.trim());
+      const messages = lines.map(line => window.decoder.decode(line.trim())).filter(Boolean);
+      displayMessages(messages);
+    };
+    
+    window.loadExample = function(hex) {
+      document.getElementById('messageInput').value = hex;
+      decodeMessage();
+    };
+    
+    function displayMessages(messages) {
+      const results = document.getElementById('results');
+      const messageList = document.getElementById('messageList');
+      
+      messageList.innerHTML = '';
+      
+      messages.forEach(msg => {
+        if (!msg) {
+          messageList.innerHTML += `<div class="message-card error">Invalid message format</div>`;
+          return;
+        }
+        
+        const card = document.createElement('div');
+        card.className = 'message-card';
+        
+        let html = `
+          <div class="message-header">
+            <span class="icao">ICAO: ${msg.icao24 || 'N/A'}</span>
+            <span class="type-badge">${msg.typeName || 'Unknown'}</span>
+          </div>
+        `;
+        
+        if (msg.callsign) {
+          html += `
+            <div class="info-item">
+              <div class="info-label">Callsign</div>
+              <div class="callsign">${msg.callsign}</div>
+            </div>
+          `;
+        }
+        
+        html += '<div class="info-grid">';
+        
+        if (msg.altitude !== undefined) {
+          html += `
+            <div class="info-item">
+              <div class="info-label">Altitude</div>
+              <div class="info-value">${msg.altitude.toLocaleString()} ft</div>
+            </div>
+          `;
+        }
+        
+        if (msg.velocity !== undefined) {
+          html += `
+            <div class="info-item">
+              <div class="info-label">Velocity</div>
+              <div class="info-value">${Math.round(msg.velocity)} kt</div>
+            </div>
+          `;
+        }
+        
+        if (msg.heading !== undefined) {
+          html += `
+            <div class="info-item">
+              <div class="info-label">Heading</div>
+              <div class="info-value">${Math.round(msg.heading)}°</div>
+            </div>
+          `;
+        }
+        
+        if (msg.verticalRate !== undefined) {
+          html += `
+            <div class="info-item">
+              <div class="info-label">Vertical Rate</div>
+              <div class="info-value">${msg.verticalRate > 0 ? '+' : ''}${msg.verticalRate} ft/min</div>
+            </div>
+          `;
+        }
+        
+        html += '</div>';
+        
+        html += `<div class="raw-data">RAW: ${msg.raw}</div>`;
+        
+        card.innerHTML = html;
+        messageList.appendChild(card);
+      });
+      
+      results.style.display = 'block';
+    }
+  </script>
+</body>
+</html>

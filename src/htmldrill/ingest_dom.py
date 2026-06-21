@@ -43,6 +43,27 @@ _TYPE_MAP = {
 }
 
 
+def _blocks_from_tiddlywiki_store(store: list[dict]) -> list["H.Block"]:
+    """Turn a TiddlyWiki content-tiddler store into the block spine: each tiddler
+    becomes a Heading (its title) + a Paragraph (its text). Tiny macro/template
+    shims (the <120-char ``<$latex>``/``<$link>`` shadow tiddlers) are skipped so
+    real prose is what surfaces, not scaffolding."""
+    blocks: list[H.Block] = []
+    for t in store:
+        title = str(t.get("title", "")).strip()
+        text = str(t.get("text", "")).strip()
+        # skip the macro/widget template tiddlers (short, all-caps shim titles like
+        # FO/CIT/PARA whose body is a single <$widget …/> call)
+        if len(text) < 120 and text.startswith("<$"):
+            continue
+        if not text:
+            continue
+        if title:
+            blocks.append(H.Block(type="Heading", text=title, props={"level": 2}))
+        blocks.append(H.Block(type="Paragraph", text=text))
+    return blocks
+
+
 def _props_for(block: H.Block, flow_index: int) -> dict:
     """Type-specific props (+ flow_index) for a non-Section block's DocObject."""
     p: dict = {"flow_index": flow_index, "text": block.text}
@@ -78,6 +99,16 @@ def build_document(html: str, bibkey: str, local_id: Optional[str] = None):
 
     stream = doc.ensure_stream(HTML_STREAM)
     blocks = H.walk_blocks(html)
+
+    # Fallback for JS-rendered single-file apps whose static body is empty: a
+    # TiddlyWiki carries all its content in an inline JSON tiddler store, which we
+    # can read offline (no browser). If the structural walk found essentially
+    # nothing but a store exists, build the spine from the store instead — turning
+    # the silent-empty-output case into a real document.
+    if sum(len(b.text) for b in blocks) < 200:
+        store = H.tiddlywiki_store(html)
+        if store:
+            blocks = _blocks_from_tiddlywiki_store(store)
 
     # Section hierarchy: an HTML heading at level L closes every open section of
     # level >= L (its siblings/deeper kin) and nests under the nearest shallower

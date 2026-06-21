@@ -132,10 +132,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("status", help="show the sidecar state")
     url_arg(p); work_arg(p); p.set_defaults(cmd="status")
 
-    # steps — planner view
+    # steps — planner view. `url` is optional: with only a command we describe the
+    # generic chain; with a url/id too we describe it against that target's state.
     p = sub.add_parser("steps", help="show the prerequisite chain for a command")
     p.add_argument("target", help="the command to plan for (e.g. size)")
-    url_arg(p); work_arg(p); p.set_defaults(cmd="steps")
+    p.add_argument("url", nargs="?", default=None,
+                   help="optional URL / local path / sidecar id to plan against")
+    work_arg(p); p.set_defaults(cmd="steps")
 
     # doctor / config — diagnostics (no target)
     p = sub.add_parser("doctor", help="environment self-check")

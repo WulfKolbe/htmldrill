@@ -25,7 +25,7 @@ from typing import Optional
 
 from . import planner
 from .parse import html as H
-from .sidecar import Sidecar, resolve_local_id, work_root
+from .sidecar import Sidecar, work_root
 from .sources import fetch as F
 from .sources import render as R
 
@@ -142,10 +142,21 @@ def _fetch_report(sc: Sidecar, cached: bool) -> str:
 # -- snapshot introspection (no network) -------------------------------------
 
 def _guess_framework(html: str) -> str:
-    pats = [("Next.js", r"__NEXT_DATA__|/_next/"), ("Nuxt", r"__NUXT__"),
-            ("React", r"data-reactroot|react(?:-dom)?\.production"),
-            ("Vue", r"data-v-[0-9a-f]{8}|vue(?:\.runtime)?"),
-            ("Angular", r"ng-version|_nghost"), ("Svelte", r"svelte-[0-9a-z]{6}")]
+    # Patterns must be SPECIFIC markers (attributes/globals/generator meta), not
+    # bare words like "vue"/"angular" — those substring-match chat/JSON payloads
+    # and produce false positives (a 62MB ChatGPT export "is Vue + Angular";
+    # a TiddlyWiki "is Vue"). We also detect TiddlyWiki, the most common real input.
+    pats = [
+        ("Next.js", r"__NEXT_DATA__|/_next/static/"),
+        ("Nuxt", r"window\.__NUXT__"),
+        ("React", r"data-reactroot|react-dom\.production|__REACT_DEVTOOLS"),
+        ("Vue", r"data-v-[0-9a-f]{8}\b|__VUE__|vue\.runtime"),
+        ("Angular", r"\bng-version=|_nghost-|\bng-app="),
+        ("Svelte", r"\bsvelte-[0-9a-z]{6}\b"),
+        ("TiddlyWiki",
+         r'application-name"\s+content="TiddlyWiki"|tiddlywiki-tiddler-store|'
+         r'id="storeArea"|generator"\s+content="TiddlyWiki"'),
+    ]
     hits = [name for name, p in pats if re.search(p, html, re.I)]
     return ", ".join(hits) if hits else "none detected"
 
@@ -195,11 +206,15 @@ def cmd_meta(ctx: Ctx) -> str:
     sc.add_fact(META_KNOWN)
     sc.log_transition("meta", _prev(sc, META_KNOWN), META_KNOWN, 0, f"{len(meta)} keys")
     sc.save()
-    if not meta:
+    if not meta and not c.title:
         return f"{sc.local_id}: no <meta> tags or <title> found."
-    lines = [f"{sc.local_id}: <title> {c.title!r}", f"  {len(meta)} meta key(s):"]
-    for k, v in meta.items():
-        lines.append(f"    {k}: {v[:100]}")
+    lines = [f"{sc.local_id}: <title> {c.title!r}"]
+    if meta:
+        lines.append(f"  {len(meta)} meta key(s):")
+        for k, v in meta.items():
+            lines.append(f"    {k}: {v[:100]}")
+    else:
+        lines.append("  (no <meta> tags, but a <title> is present)")
     return "\n".join(lines)
 
 
@@ -216,7 +231,17 @@ def cmd_canonical(ctx: Ctx) -> str:
     return f"{sc.local_id}:\n" + "\n".join(f"  {k}: {v}" for k, v in canon.items())
 
 
-_URL_RE = re.compile(r"https?://[^\s\"'<>)\]}]+")
+# A URL stops at whitespace, quotes, brackets, backslashes (JS escapes), and
+# common code punctuation — so we don't harvest `http://\\\\n…` or `http://$(x`
+# escape-mangled fragments out of JS string literals as if they were real links.
+_URL_RE = re.compile(r"https?://[^\s\"'<>)\]}\\(|]+")
+
+
+def _clean_url(u: str) -> str:
+    """Decode the handful of HTML entities that leak into harvested URLs and trim
+    trailing punctuation, so the invisible-URL list is clean."""
+    import html as _html
+    return _html.unescape(u).rstrip(".,;")
 
 
 def cmd_links(ctx: Ctx) -> str:
@@ -228,8 +253,13 @@ def cmd_links(ctx: Ctx) -> str:
     # JS string literals) that never surface as a visible <a href> anchor — the
     # HTML analog of pdfdrill reading invisible links out of the annotation layer.
     anchor_set = {u for u, _ in links["internal"] + links["external"] + links["other"]}
-    raw_urls = set(_URL_RE.findall(html))
-    hidden = sorted(u for u in raw_urls if u not in anchor_set)
+    raw_urls = {_clean_url(u) for u in _URL_RE.findall(html)}
+    # keep only plausible hosts (a dot in the authority) — drops `http://<wikiname`,
+    # `http://$(userName`, `http://127.0.0.1:8080` template noise stays but garbage
+    # with no real host is dropped.
+    hidden = sorted(
+        u for u in raw_urls
+        if u not in anchor_set and "." in u.split("//", 1)[-1].split("/", 1)[0])
     sc.set_evidence("link_counts", {k: len(v) for k, v in links.items()})
     sc.set_evidence("hidden_link_count", len(hidden))
     sc.add_fact(LINKS_KNOWN)
@@ -637,8 +667,13 @@ def _projector_report(sc: Sidecar, *, name: str, classname: str,
             f"  → {sc.blob_path(out_blob)}")
 
 
-def _tiddlers_dir(ctx: Ctx) -> Path:
-    return Path(ctx.out or os.environ.get("HTMLDRILL_TIDDLERS") or "tiddlers")
+def _tiddlers_dir(ctx: Ctx, sc: Sidecar) -> Path:
+    """Per-tiddler output dir. Defaults INSIDE this target's blob dir so runs are
+    isolated per target — never the shared repo-root ``tiddlers/`` (which pooled
+    every target's files into the working tree). Overridable via --out /
+    $HTMLDRILL_TIDDLERS."""
+    explicit = ctx.out or os.environ.get("HTMLDRILL_TIDDLERS")
+    return Path(explicit) if explicit else (sc.blob_dir / "tiddlers")
 
 
 def cmd_tiddlers(ctx: Ctx) -> str:
@@ -647,7 +682,7 @@ def cmd_tiddlers(ctx: Ctx) -> str:
     plus individual ``.tid`` files into ``./tiddlers/`` (like chatdrill). OFFLINE;
     requires ``model`` (auto-ensured). Idempotent via TIDDLERS_BUILT / --force."""
     sc = Sidecar(_resolve_id(ctx), work=ctx.work)
-    out_dir = _tiddlers_dir(ctx)
+    out_dir = _tiddlers_dir(ctx, sc)
     if sc.has(TIDDLERS_BUILT) and sc.has_blob("tiddlers.json") and not ctx.force:
         n = sc.get_evidence("tiddler_count", "?")
         return (f"cached tiddlers {sc.local_id}: {n} tiddler(s) — skipped. "
@@ -709,7 +744,7 @@ def cmd_artifacts(ctx: Ctx) -> str:
 
 
 def cmd_status(ctx: Ctx) -> str:
-    sc = Sidecar(resolve_local_id(ctx.url, ctx.work), work=ctx.work)
+    sc = Sidecar(_resolve_id(ctx), work=ctx.work)
     if not sc.json_path.exists():
         return (f"no sidecar for {ctx.url!r} yet — nothing built. "
                 f"Run `htmldrill fetch {ctx.url}`.")
@@ -730,7 +765,10 @@ def cmd_status(ctx: Ctx) -> str:
 
 
 def cmd_steps(ctx: Ctx) -> str:
-    sc = Sidecar(resolve_local_id(ctx.url, ctx.work), work=ctx.work)
+    # `url` is optional for steps: with no target, plan against a fresh (empty)
+    # sidecar so we still describe the generic prerequisite chain.
+    lid = _resolve_id(ctx) if ctx.url else "(no-target)"
+    sc = Sidecar(lid, work=ctx.work)
     return planner.describe(ctx.target, sc)
 
 

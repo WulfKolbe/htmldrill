@@ -16,6 +16,7 @@ Design notes:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Optional
@@ -172,8 +173,15 @@ def extract_feeds(c: Collected) -> list[dict]:
 
 
 def extract_links(c: Collected, base_url: str = "") -> dict:
-    """Anchor hrefs resolved against base_url, split internal vs external."""
-    base_host = urlparse(base_url).netloc if base_url else ""
+    """Anchor hrefs resolved against base_url, split internal vs external.
+
+    Internal == same host (http/https) OR, for a local ``file://`` page, a target
+    under the same directory (so a relative ``cv/index.html`` link on a local site
+    classifies as internal rather than falling into 'other')."""
+    base_parsed = urlparse(base_url) if base_url else None
+    base_host = base_parsed.netloc if base_parsed else ""
+    base_scheme = base_parsed.scheme if base_parsed else ""
+    base_dir = base_parsed.path.rsplit("/", 1)[0] + "/" if base_parsed else ""
     internal, external, other = [], [], []
     seen = set()
     for href, text in c.anchors:
@@ -190,6 +198,9 @@ def extract_links(c: Collected, base_url: str = "") -> dict:
             internal.append((resolved, text))
         elif scheme in ("http", "https"):
             external.append((resolved, text))
+        elif (scheme == "file" and base_scheme == "file"
+              and urlparse(resolved).path.startswith(base_dir)):
+            internal.append((resolved, text))           # same local site tree
         else:
             other.append((resolved, text))
     return {"internal": internal, "external": external, "other": other}
@@ -287,6 +298,23 @@ _BLOCK_TEXT_TAGS = {
 }
 _SKIP_STRUCTURAL = {"script", "style", "noscript", "template", "svg", "head"}
 
+#: form-control / generic-content tags whose visible text is real page content but
+#: which carry no semantic block tag — buttons, labels, textareas, table captions,
+#: summary/figcaption. Without these the structural walk drops every interactive
+#: page's UI text (the AWK/ADS-B real-world data-loss bug). Their text is captured
+#: like a paragraph.
+_INLINE_TEXT_TAGS = {
+    "button", "label", "textarea", "option", "legend", "caption",
+    "figcaption", "summary", "dt", "dd",
+}
+#: block-level tags that terminate a run of loose flow text (so generic <div>/<span>
+#: prose flushes as its own Paragraph at sensible boundaries instead of merging the
+#: whole page body into one blob).
+_FLOW_BOUNDARY = {
+    "div", "section", "article", "main", "header", "footer", "aside", "nav",
+    "ul", "ol", "dl", "form", "fieldset", "figure", "hr", "br",
+}
+
 
 class _StructuralWalker(HTMLParser):
     """Emit an ordered list of :class:`Block` from a single SAX pass."""
@@ -300,14 +328,27 @@ class _StructuralWalker(HTMLParser):
         self._cap_tag: Optional[str] = None
         self._cap_buf: list[str] = []
         self._cap_props: dict = {}
+        # loose flow text (text not inside any recognized block) → Paragraph
+        self._flow_buf: list[str] = []
         # table accumulation
         self._table_rows: list[list[str]] = []
         self._cur_row: Optional[list[str]] = None
         self._in_table = 0
 
+    # -- loose flow text (generic <div>/<span>/text-node content) --
+    def _flush_flow(self) -> None:
+        if not self._flow_buf:
+            return
+        text = " ".join("".join(self._flow_buf).split())
+        self._flow_buf = []
+        if text:
+            self.blocks.append(Block(type="Paragraph", text=text))
+
     # -- text-block lifecycle --
     def _open(self, tag: str, btype: str, props: Optional[dict] = None) -> None:
-        # flush any block already open (handles non-nesting tag soup gracefully)
+        # flush any loose flow text and any block already open (handles
+        # non-nesting tag soup gracefully)
+        self._flush_flow()
         self._flush()
         self._cap_tag = tag
         self._cap_type = btype
@@ -331,6 +372,7 @@ class _StructuralWalker(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         if tag in _SKIP_STRUCTURAL:
+            self._flush_flow()
             self._skip_depth += 1
             return
         if self._skip_depth:
@@ -338,6 +380,7 @@ class _StructuralWalker(HTMLParser):
         a = {k.lower(): (v or "") for k, v in attrs}
 
         if tag == "table":
+            self._flush_flow()
             self._flush()
             self._in_table += 1
             self._table_rows = []
@@ -347,8 +390,8 @@ class _StructuralWalker(HTMLParser):
             self._cur_row = []
             return
 
-        if tag in _BLOCK_TEXT_TAGS:
-            btype = _BLOCK_TEXT_TAGS[tag]
+        if tag in _BLOCK_TEXT_TAGS or tag in _INLINE_TEXT_TAGS:
+            btype = _BLOCK_TEXT_TAGS.get(tag, "Paragraph")
             if tag in _HEADINGS:
                 self._open(tag, "Heading", {"level": int(tag[1])})
             else:
@@ -357,6 +400,7 @@ class _StructuralWalker(HTMLParser):
 
         if tag == "img":
             # figure/image: self-contained, alt+src
+            self._flush_flow()
             self._flush()
             self.blocks.append(Block(
                 type="Figure", text=a.get("alt", ""),
@@ -368,6 +412,12 @@ class _StructuralWalker(HTMLParser):
             # already capturing (then the anchor text folds into that block instead).
             if self._cap_type is None:
                 self._open("a", "Link", {"href": a["href"]})
+            return
+
+        # generic flow container: a run of loose text here flushes as its own
+        # Paragraph at the boundary, so <div>/<span>/<p>-less prose is not lost.
+        if tag in _FLOW_BOUNDARY:
+            self._flush_flow()
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -380,6 +430,11 @@ class _StructuralWalker(HTMLParser):
             return
         if self._cap_type is not None:
             self._cap_buf.append(data)
+        elif self._in_table and self._cur_row is not None:
+            # loose text directly inside a <tr> (rare) — ignore; cells handle it
+            return
+        else:
+            self._flow_buf.append(data)
 
     def handle_endtag(self, tag):
         if tag in _SKIP_STRUCTURAL:
@@ -406,10 +461,14 @@ class _StructuralWalker(HTMLParser):
             return
         if tag == self._cap_tag:
             self._flush()
+            return
+        if tag in _FLOW_BOUNDARY:
+            self._flush_flow()
 
     def close(self):  # noqa: D102
         super().close()
         self._flush()
+        self._flush_flow()
 
 
 def walk_blocks(html: str) -> list[Block]:
@@ -425,3 +484,59 @@ def walk_blocks(html: str) -> list[Block]:
     except Exception:
         pass
     return w.blocks
+
+
+# --------------------------------------------------------------------------- #
+# TiddlyWiki single-file store (M2 SPA recovery)
+#
+# A TiddlyWiki 5 saved as a single .html file keeps ALL its content in a JSON
+# tiddler store — either a modern <script class="tiddlywiki-tiddler-store"> block
+# or a legacy <div id="storeArea"> of <div title=…> elements. The rendered body
+# is essentially empty until JS boots, so the static walk above sees nothing. But
+# the store is plain JSON/markup sitting right there in the file, so we can recover
+# the real document offline (no browser) by reading it directly. PDFDRILL emits
+# exactly these wikis, so this is a first-class htmldrill input, not an edge case.
+# --------------------------------------------------------------------------- #
+
+#: TiddlyWiki system tiddlers (titles starting with `$:/`) are config/plugins/UI,
+#: never document content — skip them so the store yields the real text.
+def _tw_is_content(title: str) -> bool:
+    return bool(title) and not title.startswith("$:/")
+
+
+def tiddlywiki_store(html: str) -> list[dict]:
+    """Return the content tiddlers ({title, text, type, tags}) of a single-file
+    TiddlyWiki, or [] if this isn't one. Reads the JSON store directly — offline,
+    no render — recovering SPA content the static DOM never paints."""
+    out: list[dict] = []
+    # modern: one <script class="tiddlywiki-tiddler-store" type="application/json">
+    m = re.search(
+        r'<script\b[^>]*\bclass="tiddlywiki-tiddler-store"[^>]*>(.*?)</script>',
+        html, re.S | re.I)
+    if m:
+        try:
+            data = json.loads(m.group(1).strip())
+            for t in data if isinstance(data, list) else []:
+                if isinstance(t, dict) and _tw_is_content(t.get("title", "")):
+                    out.append(t)
+        except Exception:
+            pass
+    if out:
+        return out
+    # legacy: <div id="storeArea"> … <div title="…">…<pre>text</pre></div> …
+    if 'id="storeArea"' not in html and "id='storeArea'" not in html:
+        return out
+    for div in re.finditer(
+            r'<div\b([^>]*\btitle=["\']([^"\']+)["\'][^>]*)>(.*?)</div>\s*(?=<div|</div>|$)',
+            html, re.S | re.I):
+        title = div.group(2)
+        if not _tw_is_content(title):
+            continue
+        body = div.group(3)
+        pm = re.search(r"<pre>(.*?)</pre>", body, re.S | re.I)
+        text = pm.group(1) if pm else body
+        # cheap entity unescape for the common cases stored in the <pre>
+        for a, b in (("&lt;", "<"), ("&gt;", ">"), ("&amp;", "&"), ("&quot;", '"')):
+            text = text.replace(a, b)
+        out.append({"title": title, "text": text, "type": "text/vnd.tiddlywiki"})
+    return out
